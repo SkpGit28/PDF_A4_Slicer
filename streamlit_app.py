@@ -1,20 +1,27 @@
-import streamlit as st
+import gradio as gr
 import fitz  # PyMuPDF
 import math
 from io import BytesIO
-st.sidebar.info(f"Python runtime: {sys.version}")
 
-A4_W, A4_H = 595, 842  # portrait A4 in points
+A4_W, A4_H = 595, 842  # A4 portrait in points
 
-def slice_pdf_to_a4_portrait(pdf_bytes: bytes, scale: float, remove_blanks: bool):
-    # open first page only (assumes a single very tall page)
-    src = fitz.open(stream=pdf_bytes, filetype="pdf")
+def slice_pdf(pdf_file, scale=0.80, remove_blanks=True, page_number=1):
+    # read the uploaded file into memory
+    data = pdf_file.read() if hasattr(pdf_file, "read") else open(pdf_file.name, "rb").read()
+    src = fitz.open(stream=data, filetype="pdf")
     if len(src) == 0:
         raise ValueError("PDF has no pages.")
-    spage = src[0]
+
+    # which page to slice (1-indexed in UI)
+    idx = max(1, int(page_number)) - 1
+    if idx >= len(src):
+        idx = 0
+    spage = src[idx]
+
     SRC_W, SRC_H = spage.rect.width, spage.rect.height
 
-    # how much of the source fits on one A4 page at this scale?
+    # how much of the source fits one A4 page at this scale?
+    # (portrait only, vector-preserving)
     tile_w = A4_W / scale
     tile_h = A4_H / scale
     cols = math.ceil(SRC_W / tile_w)
@@ -27,6 +34,7 @@ def slice_pdf_to_a4_portrait(pdf_bytes: bytes, scale: float, remove_blanks: bool
         bottom = min(top + tile_h, SRC_H)
         if bottom - top < 1:  # zero-height slice
             continue
+
         for c in range(cols):
             left  = c * tile_w
             right = min(left + tile_w, SRC_W)
@@ -35,55 +43,55 @@ def slice_pdf_to_a4_portrait(pdf_bytes: bytes, scale: float, remove_blanks: bool
 
             clip = fitz.Rect(left, top, right, bottom)
 
-            # create a new A4 page and draw the clipped source area scaled to fill
+            # draw the clipped source area scaled to full A4 page
             dpage = out.new_page(-1, width=A4_W, height=A4_H)
-            dpage.show_pdf_page(fitz.Rect(0, 0, A4_W, A4_H),
-                                src, 0, clip=clip, keep_proportion=False)
+            dpage.show_pdf_page(
+                fitz.Rect(0, 0, A4_W, A4_H),
+                src, idx,
+                clip=clip,
+                keep_proportion=False
+            )
 
             if remove_blanks:
-                # tiny greyscale render to detect blank pages cheaply
-                pix = dpage.get_pixmap(matrix=fitz.Matrix(0.1, 0.1),
-                                       colorspace=fitz.csGRAY, alpha=False)
-                if all(b == 255 for b in pix.samples):  # all-white -> blank
-                    out.delete_page(-1)  # remove page we just added
+                # cheap blank-page detector (tiny greyscale render)
+                tiny = dpage.get_pixmap(
+                    matrix=fitz.Matrix(0.1, 0.1),
+                    colorspace=fitz.csGRAY,
+                    alpha=False
+                )
+                if all(b == 255 for b in tiny.samples):
+                    out.delete_page(-1)
 
     buf = BytesIO()
     out.save(buf)
     out.close()
     src.close()
     buf.seek(0)
-    return buf, rows, cols
+    return buf
 
-st.set_page_config(page_title="Tall PDF → A4 (Portrait)", page_icon="📄", layout="centered")
+with gr.Blocks(title="Tall PDF → A4 (Portrait, Vector)") as demo:
+    gr.Markdown(
+        "## Tall PDF → A4 Slices (Portrait)\n"
+        "- Upload a **single tall-page PDF** (e.g., ERD export)\n"
+        "- **Scale** = bigger value → larger text → more pages\n"
+        "- Pages are **vector-preserved** (crisp print), blank tiles auto-removed\n"
+    )
 
-st.title("Tall PDF → A4 Slices (Portrait)")
-st.write("Upload a **single tall-page PDF** (e.g. exported ERD). "
-         "Choose a **Scale** (bigger = larger text, more pages). "
-         "We tile the page in both directions and return a **sharp vector PDF**.")
+    with gr.Row():
+        inp = gr.File(file_types=[".pdf"], label="Upload PDF")
 
-uploaded = st.file_uploader("Upload PDF", type=["pdf"])
-scale = st.slider("Scale (bigger = larger text)", min_value=0.40, max_value=1.00, value=0.80, step=0.05)
-remove_blanks = st.checkbox("Remove blank pages", value=True)
+    with gr.Row():
+        scale = gr.Slider(0.40, 1.00, value=0.80, step=0.05, label="Scale (bigger = larger text)")
+        page_number = gr.Number(value=1, precision=0, label="Page number (if your PDF has multiple pages)")
 
-if st.button("Create A4 PDF") and uploaded:
-    pdf_bytes = uploaded.read()
-    with st.spinner("Slicing…"):
-        try:
-            result_buf, rows, cols = slice_pdf_to_a4_portrait(pdf_bytes, scale, remove_blanks)
-        except Exception as e:
-            st.error(f"Failed: {e}")
-        else:
-            st.success(f"Done! Grid: {rows} rows × {cols} cols.")
-            st.download_button(
-                label="Download A4 PDF",
-                data=result_buf.getvalue(),
-                file_name="sliced_a4_portrait.pdf",
-                mime="application/pdf",
-            )
-            st.caption("Tip: Increase **Scale** if text looks small; expect more pages.")
+    rm_blank = gr.Checkbox(value=True, label="Remove blank pages")
+    run = gr.Button("Create A4 PDF", variant="primary")
+    out = gr.File(label="Download result")
 
-st.markdown("---")
-st.markdown("**Notes**")
-st.markdown("- Keeps **portrait** orientation. "
-            "If your PDF has multiple pages, only the **first** tall page is used.\n"
-            "- Blank pages are removed via a quick greyscale check; set **Remove blank pages** off to keep every tile.")
+    def _run(pdf, s, rm, pn):
+        return slice_pdf(pdf, s, rm, pn)
+
+    run.click(_run, [inp, scale, rm_blank, page_number], out)
+
+if __name__ == "__main__":
+    demo.launch()
