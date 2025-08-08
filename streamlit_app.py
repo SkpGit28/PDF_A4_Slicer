@@ -2,6 +2,7 @@ import streamlit as st
 import fitz  # PyMuPDF
 import math
 from io import BytesIO
+st.sidebar.info(f"Python runtime: {sys.version}")
 
 A4_W, A4_H = 595, 842  # portrait A4 in points
 
