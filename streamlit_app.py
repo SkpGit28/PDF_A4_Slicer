@@ -1,3 +1,12 @@
+# top of streamlit_app.py
+try:
+    import fitz  # PyMuPDF
+except ModuleNotFoundError:
+    import pymupdf as fitz  # fallback name on some environments
+
+import streamlit as st
+import math
+from io import BytesIO
 import streamlit as st
 import fitz  # PyMuPDF
 import math
